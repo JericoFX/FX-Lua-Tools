@@ -2,7 +2,7 @@
     "name": "jericofx-lua-tools",
     "displayName": "JericoFX Lua Tools",
     "description": "Detects common issues in FiveM Lua scripts",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "author": "JericoFX",
     "publisher": "JericoFX",
     "repository": {
