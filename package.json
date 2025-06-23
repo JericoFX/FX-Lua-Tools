@@ -2,7 +2,7 @@
     "name": "jericofx-lua-tools",
     "displayName": "JericoFX Lua Tools",
     "description": "Detects common issues in FiveM Lua scripts",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "author": "JericoFX",
     "publisher": "JericoFX",
     "repository": {
@@ -82,11 +82,12 @@
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
         "package": "vsce package",
-        "publish": "vsce publish",
+        "publish": "vsce publish && bunx ovsx publish",
+        "publish:vscode": "vsce publish",
+        "publish:ovsx": "bunx ovsx publish",
         "publish:patch": "vsce publish patch",
         "publish:minor": "vsce publish minor",
         "publish:major": "vsce publish major",
-        "publish:ovsx": "bunx ovsx publish",
         "version:patch": "bun run scripts/version-bump.js patch",
         "version:minor": "bun run scripts/version-bump.js minor",
         "version:major": "bun run scripts/version-bump.js major"
