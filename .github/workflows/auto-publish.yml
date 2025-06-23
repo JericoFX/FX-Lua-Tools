@@ -80,27 +80,8 @@ jobs:
       
     - name: Package extension
       run: bun run package
-      
-    - name: Create Git Tag
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git tag -a "v${{ needs.check-version.outputs.new-version }}" -m "Release v${{ needs.check-version.outputs.new-version }}"
-        git push origin "v${{ needs.check-version.outputs.new-version }}"
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         
     - name: Publish to Visual Studio Marketplace
       run: bun run publish
       env:
-        VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        
-    - name: Create GitHub Release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: v${{ needs.check-version.outputs.new-version }}
-        release_name: Release v${{ needs.check-version.outputs.new-version }}
-        draft: false
-        prerelease: false 
+        VSCE_PAT: ${{ secrets.VSCE_PAT }} 
