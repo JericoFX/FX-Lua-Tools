@@ -86,7 +86,7 @@
         "publish:patch": "vsce publish patch",
         "publish:minor": "vsce publish minor",
         "publish:major": "vsce publish major",
-        "publish:ovsx": "npx ovsx publish",
+        "publish:ovsx": "bunx ovsx publish",
         "version:patch": "bun run scripts/version-bump.js patch",
         "version:minor": "bun run scripts/version-bump.js minor",
         "version:major": "bun run scripts/version-bump.js major"
