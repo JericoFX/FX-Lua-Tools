@@ -25,17 +25,25 @@ jobs:
       id: check
       run: |
         current_version=$(node -p "require('./package.json').version")
-        git checkout HEAD~1
-        previous_version=$(node -p "require('./package.json').version")
-        git checkout -
         
-        if [ "$current_version" != "$previous_version" ]; then
+        # Check if there's a previous commit
+        if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+          git checkout HEAD~1
+          previous_version=$(node -p "require('./package.json').version")
+          git checkout -
+          
+          if [ "$current_version" != "$previous_version" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "version=$current_version" >> $GITHUB_OUTPUT
+            echo "Version changed from $previous_version to $current_version"
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "Version unchanged: $current_version"
+          fi
+        else
           echo "changed=true" >> $GITHUB_OUTPUT
           echo "version=$current_version" >> $GITHUB_OUTPUT
-          echo "Version changed from $previous_version to $current_version"
-        else
-          echo "changed=false" >> $GITHUB_OUTPUT
-          echo "Version unchanged: $current_version"
+          echo "No previous commit found, assuming version changed: $current_version"
         fi
 
   publish:
