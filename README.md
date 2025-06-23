@@ -1,3 +1,7 @@
+## Marketplace Link
+
+https://marketplace.visualstudio.com/items?itemName=JericoFX.jericofx-lua-tools
+
 # JericoFX Lua Tools
 
 A VS Code extension that detects common performance and code quality issues in FiveM Lua scripts.
