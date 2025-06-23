@@ -1,0 +1,86 @@
+name: Auto Publish on Version Change
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'package.json'
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version-changed: ${{ steps.check.outputs.changed }}
+      new-version: ${{ steps.check.outputs.version }}
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+        
+    - name: Check if version changed
+      id: check
+      run: |
+        current_version=$(node -p "require('./package.json').version")
+        git checkout HEAD~1
+        previous_version=$(node -p "require('./package.json').version")
+        git checkout -
+        
+        if [ "$current_version" != "$previous_version" ]; then
+          echo "changed=true" >> $GITHUB_OUTPUT
+          echo "version=$current_version" >> $GITHUB_OUTPUT
+          echo "Version changed from $previous_version to $current_version"
+        else
+          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "Version unchanged: $current_version"
+        fi
+
+  publish:
+    needs: check-version
+    if: needs.check-version.outputs.version-changed == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v1
+      with:
+        bun-version: latest
+        
+    - name: Install dependencies
+      run: bun install --frozen-lockfile
+      
+    - name: Compile TypeScript
+      run: bun run compile
+      
+    - name: Package extension
+      run: bun run package
+      
+    - name: Create Git Tag
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git tag -a "v${{ needs.check-version.outputs.new-version }}" -m "Release v${{ needs.check-version.outputs.new-version }}"
+        git push origin "v${{ needs.check-version.outputs.new-version }}"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Publish to Visual Studio Marketplace
+      run: bun run publish
+      env:
+        VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        
+    - name: Create GitHub Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ needs.check-version.outputs.new-version }}
+        release_name: Release v${{ needs.check-version.outputs.new-version }}
+        draft: false
+        prerelease: false 

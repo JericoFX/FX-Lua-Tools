@@ -1,0 +1,99 @@
+{
+    "name": "jericofx-lua-tools",
+    "displayName": "JericoFX Lua Tools",
+    "description": "Detects common issues in FiveM Lua scripts",
+    "version": "1.0.0",
+    "author": "JericoFX",
+    "publisher": "JericoFX",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/JericoFX/jericofx-lua-tools"
+    },
+    "icon": "icon.png",
+    "engines": {
+        "vscode": "^1.60.0"
+    },
+    "categories": [
+        "Linters",
+        "Other"
+    ],
+    "keywords": [
+        "fivem",
+        "lua",
+        "linter",
+        "performance",
+        "citizen"
+    ],
+    "activationEvents": [
+        "onLanguage:lua"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "configuration": {
+            "title": "JericoFX Lua Tools",
+            "properties": {
+                "jericofxLuaTools.enableWhileLoopCheck": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable detection of while loops without Wait()"
+                },
+                "jericofxLuaTools.enableRepeatLoopCheck": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable detection of repeat loops without Wait()"
+                },
+                "jericofxLuaTools.enableGlobalVariableCheck": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable detection of undeclared global variables"
+                },
+                "jericofxLuaTools.enablePerformanceCheck": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable performance issue detection"
+                },
+                "jericofxLuaTools.enableNetEventCheck": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable RegisterNetEvent and AddEventHandler pattern detection"
+                },
+                "jericofxLuaTools.enableCitizenPatterns": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable Citizen function pattern detection (CreateThread, Wait, Promise)"
+                }
+            }
+        },
+        "commands": [
+            {
+                "command": "jericofxLuaTools.scanCurrentFile",
+                "title": "Scan Current File",
+                "category": "JericoFX Lua Tools"
+            },
+            {
+                "command": "jericofxLuaTools.scanWorkspace",
+                "title": "Scan Entire Workspace",
+                "category": "JericoFX Lua Tools"
+            }
+        ]
+    },
+    "scripts": {
+        "vscode:prepublish": "bun run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "package": "vsce package",
+        "publish": "vsce publish",
+        "publish:patch": "vsce publish patch",
+        "publish:minor": "vsce publish minor",
+        "publish:major": "vsce publish major",
+        "version:patch": "bun run scripts/version-bump.js patch",
+        "version:minor": "bun run scripts/version-bump.js minor",
+        "version:major": "bun run scripts/version-bump.js major"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.101.0",
+        "@types/node": "^24.0.3",
+        "typescript": "^5.8.3",
+        "@vscode/vsce": "^3.5.0"
+    }
+}
