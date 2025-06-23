@@ -26,33 +26,44 @@ jobs:
       id: check
       run: |
         current_version=$(node -p "require('./package.json').version")
+        echo "Current version: $current_version"
         
         # Check if there's a previous commit
         if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
           git checkout HEAD~1
           previous_version=$(node -p "require('./package.json').version")
           git checkout -
+          echo "Previous version: $previous_version"
           
           if [ "$current_version" != "$previous_version" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
             echo "version=$current_version" >> $GITHUB_OUTPUT
-            echo "Version changed from $previous_version to $current_version"
+            echo "✅ Version changed from $previous_version to $current_version"
           else
             echo "changed=false" >> $GITHUB_OUTPUT
-            echo "Version unchanged: $current_version"
+            echo "❌ Version unchanged: $current_version"
           fi
         else
           echo "changed=true" >> $GITHUB_OUTPUT
           echo "version=$current_version" >> $GITHUB_OUTPUT
-          echo "No previous commit found, assuming version changed: $current_version"
+          echo "✅ No previous commit found, assuming version changed: $current_version"
         fi
+        
+        echo "Output changed: $(cat $GITHUB_OUTPUT | grep changed=)"
+        echo "Output version: $(cat $GITHUB_OUTPUT | grep version=)"
 
   publish:
     needs: check-version
-    if: needs.check-version.outputs.version-changed == 'true'
+    if: needs.check-version.outputs.version-changed == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     
     steps:
+    - name: Debug outputs
+      run: |
+        echo "Version changed: ${{ needs.check-version.outputs.version-changed }}"
+        echo "New version: ${{ needs.check-version.outputs.new-version }}"
+        echo "Event name: ${{ github.event_name }}"
+        
     - name: Checkout repository
       uses: actions/checkout@v4
       
