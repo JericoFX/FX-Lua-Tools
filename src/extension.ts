@@ -125,6 +125,13 @@ export function activate(context: vscode.ExtensionContext) {
     }
   );
 
+  const clearCacheCommand = vscode.commands.registerCommand(
+    'jericofxLuaTools.clearDocumentationCache',
+    () => {
+      documentationManager.clearDocumentationCache();
+    }
+  );
+
   context.subscriptions.push(
     scanCurrentFileCommand,
     scanWorkspaceCommand,
@@ -133,7 +140,8 @@ export function activate(context: vscode.ExtensionContext) {
     addDocSourceCommand,
     refreshDocCommand,
     manageDocSourcesCommand,
-    debugDocCommand
+    debugDocCommand,
+    clearCacheCommand
   );
 
   vscode.workspace.textDocuments.forEach((document) => {

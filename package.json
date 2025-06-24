@@ -2,7 +2,7 @@
     "name": "jericofx-lua-tools",
     "displayName": "JericoFX Lua Tools",
     "description": "Detects common issues in FiveM Lua scripts",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "author": "JericoFX",
     "publisher": "JericoFX",
     "repository": {
@@ -72,6 +72,11 @@
                     "default": true,
                     "description": "Enable documentation and autocomplete features"
                 },
+                "jericofxLuaTools.autoLoadLocalTypes": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Automatically detect and load local types.lua files from workspace"
+                },
                 "jericofxLuaTools.documentationSources": {
                     "type": "array",
                     "default": [],
@@ -130,6 +135,11 @@
             {
                 "command": "jericofxLuaTools.debugDocumentation",
                 "title": "Debug Documentation",
+                "category": "JericoFX Lua Tools"
+            },
+            {
+                "command": "jericofxLuaTools.clearDocumentationCache",
+                "title": "Clear Documentation Cache",
                 "category": "JericoFX Lua Tools"
             }
         ]

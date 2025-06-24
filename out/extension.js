@@ -72,7 +72,10 @@ function activate(context) {
         vscode.window.showInformationMessage('Debug info written to console. Check Developer Tools.');
         console.log(debugInfo);
     });
-    context.subscriptions.push(scanCurrentFileCommand, scanWorkspaceCommand, onDidChangeTextDocument, onDidOpenTextDocument, addDocSourceCommand, refreshDocCommand, manageDocSourcesCommand, debugDocCommand);
+    const clearCacheCommand = vscode.commands.registerCommand('jericofxLuaTools.clearDocumentationCache', () => {
+        documentationManager.clearDocumentationCache();
+    });
+    context.subscriptions.push(scanCurrentFileCommand, scanWorkspaceCommand, onDidChangeTextDocument, onDidOpenTextDocument, addDocSourceCommand, refreshDocCommand, manageDocSourcesCommand, debugDocCommand, clearCacheCommand);
     vscode.workspace.textDocuments.forEach((document) => {
         if (document.languageId === 'lua') {
             scanDocument(document);

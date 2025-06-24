@@ -243,6 +243,80 @@ class DocumentationParser {
         }
         return examples;
     }
+    static parseNatives(content, sourceName) {
+        console.log(`Starting parseNatives for ${sourceName}`);
+        const functions = new Map();
+        try {
+            const nativesData = JSON.parse(content);
+            if (typeof nativesData !== 'object' || nativesData === null) {
+                console.error('Invalid natives JSON format: root should be an object');
+                return functions;
+            }
+            for (const [functionName, nativeInfo] of Object.entries(nativesData)) {
+                try {
+                    const native = nativeInfo;
+                    if (!native || typeof native !== 'object') {
+                        console.warn(`Skipping invalid native: ${functionName}`);
+                        continue;
+                    }
+                    const parameters = [];
+                    if (native.parameters && Array.isArray(native.parameters)) {
+                        for (const param of native.parameters) {
+                            if (param && typeof param === 'object') {
+                                parameters.push({
+                                    name: param.name || 'unknown',
+                                    type: param.type || 'any',
+                                    description: param.description || '',
+                                    optional: param.optional || false
+                                });
+                            }
+                        }
+                    }
+                    const returns = [];
+                    if (native.returns) {
+                        if (Array.isArray(native.returns)) {
+                            for (const ret of native.returns) {
+                                if (ret && typeof ret === 'object') {
+                                    returns.push({
+                                        type: ret.type || 'void',
+                                        description: ret.description || ''
+                                    });
+                                }
+                            }
+                        }
+                        else if (typeof native.returns === 'object') {
+                            returns.push({
+                                type: native.returns.type || 'void',
+                                description: native.returns.description || ''
+                            });
+                        }
+                    }
+                    const func = {
+                        name: native.name || functionName,
+                        source: sourceName,
+                        description: native.description || `Native function from ${sourceName}`,
+                        parameters,
+                        returns,
+                        examples: native.examples || []
+                    };
+                    if (native.side) {
+                        func.description += ` (Side: ${native.side})`;
+                    }
+                    functions.set(functionName, func);
+                    console.log(`Parsed native: ${functionName} with ${parameters.length} parameters`);
+                }
+                catch (error) {
+                    console.warn(`Error parsing native ${functionName}:`, error);
+                }
+            }
+        }
+        catch (error) {
+            console.error(`Failed to parse natives JSON:`, error);
+            return functions;
+        }
+        console.log(`Parsed ${functions.size} natives from ${sourceName}`);
+        return functions;
+    }
 }
 exports.DocumentationParser = DocumentationParser;
 //# sourceMappingURL=documentation-parser.js.map

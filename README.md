@@ -82,7 +82,7 @@ Features:
 - Best choice when unsure about file format
 
 **4. `natives` - FiveM Natives JSON**
-For FiveM native function documentation in JSON format.
+For FiveM native function documentation in JSON format. Parses JSON files containing native function definitions with full parameter and return type information.
 
 Expected JSON structure:
 ```json
@@ -107,6 +107,12 @@ Expected JSON structure:
   }
 }
 ```
+
+Features:
+- Parses native function definitions from JSON format
+- Supports multiple parameters and return types
+- Includes side information (client/server/both)
+- Provides autocomplete for native functions
 
 #### Adding Documentation Sources
 
@@ -135,6 +141,52 @@ Documentation sources can be added through the extension settings or using the c
 - Follow the prompts to enter name, URL, and type
 - Documentation will be automatically downloaded and cached
 
+#### Auto-Loading Local Types Files
+
+The extension automatically detects and loads `types.lua` files from your workspace to provide type information without requiring external downloads or manual configuration.
+
+**Features:**
+- Automatically scans for `types.lua` files in the workspace
+- Loads function definitions and type information  
+- Works independently from Sumneko LSP configuration
+- No manual setup required - just create a `types.lua` file
+- Provides autocomplete and hover documentation
+
+**Example types.lua file:**
+```lua
+---@param player number The player ID
+---@param item string The item name
+---@param amount number The amount to give
+---@return boolean success Whether the operation succeeded
+function GivePlayerItem(player, item, amount)
+end
+
+---@param source number The player source
+---@return table playerData The player's data
+function GetPlayerData(source)
+end
+```
+
+This feature complements Sumneko LSP by automatically loading workspace-specific type definitions that may not be configured in `.luarc.json` or `workspace.library` settings.
+
+#### Cache Management
+
+The extension caches downloaded documentation locally for improved performance. You may need to clear the cache in these situations:
+
+**When to clear cache:**
+- Documentation sources have been updated remotely
+- Experiencing issues with corrupted or outdated documentation
+- Want to free up disk space used by cached files
+- Troubleshooting documentation-related problems
+
+**How to clear cache:**
+- Use Command Palette (Ctrl+Shift+P): `JericoFX Lua Tools: Clear Documentation Cache`
+- Confirmation dialog prevents accidental deletion
+- All cached data is removed and must be re-downloaded
+- Local `types.lua` files are automatically reloaded (not cached)
+
+**Cache location:** The extension stores cache in VS Code's global storage directory, separate from your workspace files.
+
 ## Configuration
 
 The extension provides several configuration options:
@@ -145,6 +197,7 @@ The extension provides several configuration options:
 - `jericofxLuaTools.enableNetEventCheck`: Enable/disable RegisterNetEvent and AddEventHandler pattern detection
 - `jericofxLuaTools.enableCitizenPatterns`: Enable/disable Citizen function pattern detection
 - `jericofxLuaTools.enableDocumentationFeatures`: Enable/disable documentation and autocomplete features
+- `jericofxLuaTools.autoLoadLocalTypes`: Enable/disable auto-loading of local types.lua files from workspace
 - `jericofxLuaTools.sumnekoCompatibility`: Enable compatibility mode with Sumneko Lua Language Server
 - `jericofxLuaTools.documentationSources`: Array of external documentation sources
 
@@ -208,6 +261,7 @@ The extension provides neutral suggestions:
 - `JericoFX Lua Tools: Add Documentation Source`: Add a new external documentation source
 - `JericoFX Lua Tools: Refresh Documentation`: Refresh all documentation sources
 - `JericoFX Lua Tools: Manage Documentation Sources`: Open settings to manage documentation sources
+- `JericoFX Lua Tools: Clear Documentation Cache`: Clear all cached documentation and force re-download
 
 ## Additional Features
 
@@ -228,6 +282,12 @@ Detects legacy Citizen function usage and suggests modern alternatives:
 Identifies common code style issues and suggests improvements for better readability and consistency:
 - Function parameter spacing patterns (source, args)
 - Properly detects existing spaces to avoid false positives
+
+### Native Functions Support
+Provides comprehensive support for FiveM native functions:
+- Parses native function definitions from JSON format
+- Provides autocomplete and hover documentation for natives
+- Supports all parameter and return type information
 
 ## How It Works
 
