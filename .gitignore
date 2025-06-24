@@ -2,3 +2,5 @@
 node_modules
 bun.lock
 INSTALL.md
+example-mixed.lua
+test.lua

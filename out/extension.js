@@ -3,10 +3,22 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = require("vscode");
+const documentation_manager_1 = require("./documentation-manager");
+const documentation_providers_1 = require("./documentation-providers");
 let diagnosticCollection;
+let documentationManager;
 function activate(context) {
-    diagnosticCollection = vscode.languages.createDiagnosticCollection('jericofxLuaTools');
+    diagnosticCollection =
+        vscode.languages.createDiagnosticCollection('jericofxLuaTools');
     context.subscriptions.push(diagnosticCollection);
+    documentationManager = new documentation_manager_1.DocumentationManager(context);
+    const config = vscode.workspace.getConfiguration('jericofxLuaTools');
+    if (config.get('enableDocumentationFeatures')) {
+        const completionProvider = new documentation_providers_1.LuaCompletionProvider(documentationManager);
+        const hoverProvider = new documentation_providers_1.LuaHoverProvider(documentationManager);
+        context.subscriptions.push(vscode.languages.registerCompletionItemProvider('lua', completionProvider), vscode.languages.registerHoverProvider('lua', hoverProvider));
+        documentationManager.refreshDocumentation();
+    }
     const scanCurrentFileCommand = vscode.commands.registerCommand('jericofxLuaTools.scanCurrentFile', () => {
         const activeEditor = vscode.window.activeTextEditor;
         if (activeEditor && activeEditor.document.languageId === 'lua') {
@@ -14,26 +26,54 @@ function activate(context) {
         }
     });
     const scanWorkspaceCommand = vscode.commands.registerCommand('jericofxLuaTools.scanWorkspace', () => {
-        vscode.workspace.findFiles('**/*.lua').then(files => {
-            files.forEach(file => {
-                vscode.workspace.openTextDocument(file).then(doc => {
+        vscode.workspace.findFiles('**/*.lua').then((files) => {
+            files.forEach((file) => {
+                vscode.workspace.openTextDocument(file).then((doc) => {
                     scanDocument(doc);
                 });
             });
         });
     });
-    const onDidChangeTextDocument = vscode.workspace.onDidChangeTextDocument(event => {
+    const onDidChangeTextDocument = vscode.workspace.onDidChangeTextDocument((event) => {
         if (event.document.languageId === 'lua') {
             scanDocument(event.document);
         }
     });
-    const onDidOpenTextDocument = vscode.workspace.onDidOpenTextDocument(document => {
+    const onDidOpenTextDocument = vscode.workspace.onDidOpenTextDocument((document) => {
         if (document.languageId === 'lua') {
             scanDocument(document);
         }
     });
-    context.subscriptions.push(scanCurrentFileCommand, scanWorkspaceCommand, onDidChangeTextDocument, onDidOpenTextDocument);
-    vscode.workspace.textDocuments.forEach(document => {
+    const addDocSourceCommand = vscode.commands.registerCommand('jericofxLuaTools.addDocumentationSource', () => {
+        documentationManager.addDocumentationSource();
+    });
+    const refreshDocCommand = vscode.commands.registerCommand('jericofxLuaTools.refreshDocumentation', () => {
+        documentationManager.refreshDocumentation();
+    });
+    const manageDocSourcesCommand = vscode.commands.registerCommand('jericofxLuaTools.manageDocumentationSources', () => {
+        vscode.commands.executeCommand('workbench.action.openSettings', 'jericofxLuaTools.documentationSources');
+    });
+    const debugDocCommand = vscode.commands.registerCommand('jericofxLuaTools.debugDocumentation', () => {
+        const allFunctions = documentationManager.getAllFunctions();
+        const sources = vscode.workspace
+            .getConfiguration('jericofxLuaTools')
+            .get('documentationSources', []);
+        let debugInfo = `=== Documentation Debug Info ===\n`;
+        debugInfo += `Total sources configured: ${sources.length}\n`;
+        debugInfo += `Total functions loaded: ${allFunctions.length}\n\n`;
+        debugInfo += `Sources:\n`;
+        sources.forEach((source) => {
+            debugInfo += `- ${source.name}: ${source.enabled ? 'enabled' : 'disabled'} (${source.type})\n`;
+        });
+        debugInfo += `\nFirst 10 functions:\n`;
+        allFunctions.slice(0, 10).forEach((func) => {
+            debugInfo += `- ${func.name} (${func.source})\n`;
+        });
+        vscode.window.showInformationMessage('Debug info written to console. Check Developer Tools.');
+        console.log(debugInfo);
+    });
+    context.subscriptions.push(scanCurrentFileCommand, scanWorkspaceCommand, onDidChangeTextDocument, onDidOpenTextDocument, addDocSourceCommand, refreshDocCommand, manageDocSourcesCommand, debugDocCommand);
+    vscode.workspace.textDocuments.forEach((document) => {
         if (document.languageId === 'lua') {
             scanDocument(document);
         }
@@ -77,7 +117,7 @@ function checkWhileLoops(document) {
             const hasWait = /\b(Wait|Citizen\.Wait)\s*\(/.test(blockContent);
             if (!hasWait) {
                 const range = new vscode.Range(new vscode.Position(lineIndex, whileMatch.index || 0), new vscode.Position(lineIndex, (whileMatch.index || 0) + whileMatch[0].length));
-                const diagnostic = new vscode.Diagnostic(range, 'While loop without Wait() detected. Your server will freeze!', vscode.DiagnosticSeverity.Warning);
+                const diagnostic = new vscode.Diagnostic(range, 'While loop without Wait() detected. Posible Server Freeze detected!', vscode.DiagnosticSeverity.Warning);
                 diagnostic.code = 'fivem-while-no-wait';
                 diagnostics.push(diagnostic);
             }
@@ -96,11 +136,13 @@ function checkRepeatLoops(document) {
             const repeatBlockEnd = findBlockEnd(lines, lineIndex, 'repeat', 'until');
             if (repeatBlockEnd === -1)
                 continue;
-            const blockContent = lines.slice(lineIndex + 1, repeatBlockEnd).join('\n');
+            const blockContent = lines
+                .slice(lineIndex + 1, repeatBlockEnd)
+                .join('\n');
             const hasWait = /\b(Wait|Citizen\.Wait)\s*\(/.test(blockContent);
             if (!hasWait) {
                 const range = new vscode.Range(new vscode.Position(lineIndex, repeatMatch.index || 0), new vscode.Position(lineIndex, (repeatMatch.index || 0) + repeatMatch[0].length));
-                const diagnostic = new vscode.Diagnostic(range, 'Repeat loop without Wait() detected. Your server will hang forever!', vscode.DiagnosticSeverity.Warning);
+                const diagnostic = new vscode.Diagnostic(range, 'Repeat loop without Wait() detected. Posible Server Freeze detected!', vscode.DiagnosticSeverity.Warning);
                 diagnostic.code = 'fivem-repeat-no-wait';
                 diagnostics.push(diagnostic);
             }
@@ -114,20 +156,31 @@ function checkGlobalVariables(document) {
     const lines = text.split('\n');
     const localVariables = new Set();
     const globalPatterns = [
-        'Config', 'exports', 'RegisterNetEvent', 'RegisterServerEvent', 'AddEventHandler',
-        'TriggerEvent', 'TriggerServerEvent', 'TriggerClientEvent'
+        'Config',
+        'exports',
+        'RegisterNetEvent',
+        'RegisterServerEvent',
+        'AddEventHandler',
+        'TriggerEvent',
+        'TriggerServerEvent',
+        'TriggerClientEvent',
     ];
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         const line = lines[lineIndex].trim();
         const localMatch = line.match(/^local\s+(.+?)(?:\s*=|$)/);
         if (localMatch) {
-            const variables = localMatch[1].split(',').map(v => v.trim()).filter(v => v);
-            variables.forEach(variable => {
+            const variables = localMatch[1]
+                .split(',')
+                .map((v) => v.trim())
+                .filter((v) => v);
+            variables.forEach((variable) => {
                 localVariables.add(variable);
             });
         }
         const assignmentMatch = line.match(/^(\w+)\s*=/);
-        if (assignmentMatch && !localVariables.has(assignmentMatch[1]) && !globalPatterns.includes(assignmentMatch[1])) {
+        if (assignmentMatch &&
+            !localVariables.has(assignmentMatch[1]) &&
+            !globalPatterns.includes(assignmentMatch[1])) {
             const range = new vscode.Range(new vscode.Position(lineIndex, 0), new vscode.Position(lineIndex, assignmentMatch[1].length));
             const diagnostic = new vscode.Diagnostic(range, `Potential global variable '${assignmentMatch[1]}' detected. Consider using 'local'.`, vscode.DiagnosticSeverity.Information);
             diagnostic.code = 'fivem-global-variable';
@@ -149,7 +202,8 @@ function checkPerformanceIssues(document) {
             diagnostics.push(diagnostic);
         }
         if (line.includes('GetEntityCoords(PlayerPedId())')) {
-            const range = new vscode.Range(new vscode.Position(lineIndex, line.indexOf('GetEntityCoords(PlayerPedId())')), new vscode.Position(lineIndex, line.indexOf('GetEntityCoords(PlayerPedId())') + 'GetEntityCoords(PlayerPedId())'.length));
+            const range = new vscode.Range(new vscode.Position(lineIndex, line.indexOf('GetEntityCoords(PlayerPedId())')), new vscode.Position(lineIndex, line.indexOf('GetEntityCoords(PlayerPedId())') +
+                'GetEntityCoords(PlayerPedId())'.length));
             const diagnostic = new vscode.Diagnostic(range, 'Consider caching PlayerPedId() and coordinates if used frequently in loops.', vscode.DiagnosticSeverity.Hint);
             diagnostic.code = 'fivem-cache-coords';
             diagnostics.push(diagnostic);
@@ -202,7 +256,9 @@ function checkNetEventPatterns(document) {
             hasAddEventHandler = true;
             if (hasRegisterNetEvent && currentEventName === addEventHandlerMatch[1]) {
                 const range = new vscode.Range(new vscode.Position(lineIndex, 0), new vscode.Position(lineIndex, line.length));
-                const diagnostic = new vscode.Diagnostic(range, 'You can combine RegisterNetEvent and AddEventHandler: RegisterNetEvent("' + currentEventName + '", function(...) end)', vscode.DiagnosticSeverity.Hint);
+                const diagnostic = new vscode.Diagnostic(range, 'You can combine RegisterNetEvent and AddEventHandler: RegisterNetEvent("' +
+                    currentEventName +
+                    '", function(...) end)', vscode.DiagnosticSeverity.Hint);
                 diagnostic.code = 'fivem-combine-event';
                 diagnostics.push(diagnostic);
             }

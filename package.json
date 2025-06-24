@@ -2,7 +2,7 @@
     "name": "jericofx-lua-tools",
     "displayName": "JericoFX Lua Tools",
     "description": "Detects common issues in FiveM Lua scripts",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "author": "JericoFX",
     "publisher": "JericoFX",
     "repository": {
@@ -61,6 +61,43 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Enable Citizen function pattern detection (CreateThread, Wait, Promise)"
+                },
+                "jericofxLuaTools.sumnekoCompatibility": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable compatibility mode with Sumneko Lua Language Server"
+                },
+                "jericofxLuaTools.enableDocumentationFeatures": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable documentation and autocomplete features"
+                },
+                "jericofxLuaTools.documentationSources": {
+                    "type": "array",
+                    "default": [],
+                    "description": "External documentation sources for autocomplete and hover",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Display name for the documentation source"
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "URL to the documentation file"
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": ["lua_types", "lua_functions", "lua_mixed", "natives"],
+                                "description": "Type of documentation"
+                            },
+                            "enabled": {
+                                "type": "boolean",
+                                "description": "Whether this source is enabled"
+                            }
+                        }
+                    }
                 }
             }
         },
@@ -73,6 +110,26 @@
             {
                 "command": "jericofxLuaTools.scanWorkspace",
                 "title": "Scan Entire Workspace",
+                "category": "JericoFX Lua Tools"
+            },
+            {
+                "command": "jericofxLuaTools.addDocumentationSource",
+                "title": "Add Documentation Source",
+                "category": "JericoFX Lua Tools"
+            },
+            {
+                "command": "jericofxLuaTools.refreshDocumentation",
+                "title": "Refresh Documentation",
+                "category": "JericoFX Lua Tools"
+            },
+            {
+                "command": "jericofxLuaTools.manageDocumentationSources",
+                "title": "Manage Documentation Sources",
+                "category": "JericoFX Lua Tools"
+            },
+            {
+                "command": "jericofxLuaTools.debugDocumentation",
+                "title": "Debug Documentation",
                 "category": "JericoFX Lua Tools"
             }
         ]
