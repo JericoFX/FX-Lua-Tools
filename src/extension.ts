@@ -285,29 +285,68 @@ function checkGlobalVariables(
     'TriggerClientEvent',
   ];
 
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-    const line = lines[lineIndex].trim();
+  let tableDepth = 0;
+  let functionDepth = 0;
+  let inMultilineString = false;
 
-    const localMatch = line.match(/^local\s+(.+?)(?:\s*=|$)/);
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex];
+    const trimmedLine = line.trim();
+
+    if (trimmedLine.startsWith('--')) {
+      continue;
+    }
+
+    const cleanLine = trimmedLine
+      .replace(/--.*$/, '')
+      .replace(/"[^"]*"/g, '')
+      .replace(/'[^']*'/g, '');
+
+    const openBraces = (cleanLine.match(/\{/g) || []).length;
+    const closeBraces = (cleanLine.match(/\}/g) || []).length;
+    tableDepth = Math.max(0, tableDepth + openBraces - closeBraces);
+
+    if (cleanLine.includes('function') && !cleanLine.includes('end')) {
+      functionDepth++;
+    }
+    if (cleanLine.includes('end') && !cleanLine.includes('function')) {
+      functionDepth = Math.max(0, functionDepth - 1);
+    }
+
+    const localMatch = trimmedLine.match(
+      /^local\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*)*)/
+    );
     if (localMatch) {
       const variables = localMatch[1]
         .split(',')
-        .map((v) => v.trim())
-        .filter((v) => v);
+        .map((v) => v.trim().replace(/\s*=.*/, ''))
+        .filter((v) => v && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(v));
       variables.forEach((variable) => {
         localVariables.add(variable);
       });
     }
 
-    const assignmentMatch = line.match(/^(\w+)\s*=/);
+    if (tableDepth > 0 || functionDepth > 0) {
+      continue;
+    }
+
+    const assignmentMatch = trimmedLine.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=/);
     if (
       assignmentMatch &&
+      !trimmedLine.startsWith('local ') &&
       !localVariables.has(assignmentMatch[1]) &&
-      !globalPatterns.includes(assignmentMatch[1])
+      !globalPatterns.includes(assignmentMatch[1]) &&
+      !trimmedLine.includes('function') &&
+      !trimmedLine.includes('{') &&
+      !trimmedLine.includes('}') &&
+      !/^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*/.test(trimmedLine)
     ) {
       const range = new vscode.Range(
-        new vscode.Position(lineIndex, 0),
-        new vscode.Position(lineIndex, assignmentMatch[1].length)
+        new vscode.Position(lineIndex, line.indexOf(assignmentMatch[1])),
+        new vscode.Position(
+          lineIndex,
+          line.indexOf(assignmentMatch[1]) + assignmentMatch[1].length
+        )
       );
 
       const diagnostic = new vscode.Diagnostic(
