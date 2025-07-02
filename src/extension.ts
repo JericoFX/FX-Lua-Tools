@@ -179,6 +179,10 @@ function scanDocument(document: vscode.TextDocument) {
     diagnostics.push(...checkCitizenPatterns(document));
   }
 
+  if (config.get('enableLocalFunctionOrderCheck')) {
+    diagnostics.push(...checkLocalFunctionOrder(document));
+  }
+
   diagnosticCollection.set(document.uri, diagnostics);
 }
 
@@ -525,6 +529,95 @@ function checkCitizenPatterns(
         vscode.DiagnosticSeverity.Information
       );
       diagnostic.code = 'fivem-citizen-wait';
+      diagnostics.push(diagnostic);
+    }
+  }
+
+  return diagnostics;
+}
+
+function checkLocalFunctionOrder(
+  document: vscode.TextDocument
+): vscode.Diagnostic[] {
+  const diagnostics: vscode.Diagnostic[] = [];
+  const text = document.getText();
+  const lines = text.split('\n');
+
+  // Map to store local function declarations: functionName -> lineIndex
+  const localFunctionDeclarations = new Map<string, number>();
+
+  // Array to store function calls: [functionName, lineIndex, columnIndex]
+  const functionCalls: Array<{ name: string; line: number; column: number }> =
+    [];
+
+  // First pass: Find all local function declarations
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex];
+
+    // Match local function declarations: local function functionName(...)
+    const localFunctionMatch = line.match(
+      /local\s+function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/
+    );
+
+    if (localFunctionMatch) {
+      const functionName = localFunctionMatch[1];
+      localFunctionDeclarations.set(functionName, lineIndex);
+    }
+  }
+
+  // Second pass: Find all function calls
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex];
+
+    // Skip lines that are comments
+    if (line.trim().startsWith('--')) {
+      continue;
+    }
+
+    // Skip lines that declare local functions (to avoid false positives)
+    if (line.match(/local\s+function\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\(/)) {
+      continue;
+    }
+
+    // Find function calls using regex
+    const functionCallRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
+    let match;
+
+    while ((match = functionCallRegex.exec(line)) !== null) {
+      const functionName = match[1];
+      const columnIndex = match.index;
+
+      // Only consider calls to functions that are declared as local functions
+      if (localFunctionDeclarations.has(functionName)) {
+        functionCalls.push({
+          name: functionName,
+          line: lineIndex,
+          column: columnIndex,
+        });
+      }
+    }
+  }
+
+  // Third pass: Check if function calls occur before their declarations
+  for (const call of functionCalls) {
+    const declarationLine = localFunctionDeclarations.get(call.name);
+
+    if (declarationLine !== undefined && call.line < declarationLine) {
+      const range = new vscode.Range(
+        new vscode.Position(call.line, call.column),
+        new vscode.Position(call.line, call.column + call.name.length)
+      );
+
+      const diagnostic = new vscode.Diagnostic(
+        range,
+        `Local function '${
+          call.name
+        }' is used before it's declared (declared on line ${
+          declarationLine + 1
+        }). This will cause a runtime error.`,
+        vscode.DiagnosticSeverity.Error
+      );
+      diagnostic.code = 'lua-function-order-error';
       diagnostics.push(diagnostic);
     }
   }
