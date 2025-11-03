@@ -5,6 +5,15 @@ import {
   LuaHoverProvider,
 } from './documentation-providers';
 
+type LuaDiagnosticContext = {
+  readonly document: vscode.TextDocument;
+  readonly text: string;
+  readonly lines: string[];
+};
+
+const SCAN_DEBOUNCE_MS = 350;
+const documentScanTimers = new Map<string, NodeJS.Timeout>();
+
 let diagnosticCollection: vscode.DiagnosticCollection;
 let documentationManager: DocumentationManager;
 
@@ -43,21 +52,25 @@ export function activate(context: vscode.ExtensionContext) {
 
   const scanWorkspaceCommand = vscode.commands.registerCommand(
     'jericofxLuaTools.scanWorkspace',
-    () => {
-      vscode.workspace.findFiles('**/*.lua').then((files) => {
-        files.forEach((file) => {
-          vscode.workspace.openTextDocument(file).then((doc) => {
-            scanDocument(doc);
-          });
-        });
-      });
+    async () => {
+      const files = await vscode.workspace.findFiles('**/*.lua');
+      await Promise.all(
+        files.map(async (file) => {
+          try {
+            const doc = await vscode.workspace.openTextDocument(file);
+            scheduleDocumentScan(doc);
+          } catch (error) {
+            console.error('Failed to open document during workspace scan:', error);
+          }
+        })
+      );
     }
   );
 
   const onDidChangeTextDocument = vscode.workspace.onDidChangeTextDocument(
     (event) => {
       if (event.document.languageId === 'lua') {
-        scanDocument(event.document);
+        scheduleDocumentScan(event.document);
       }
     }
   );
@@ -65,7 +78,16 @@ export function activate(context: vscode.ExtensionContext) {
   const onDidOpenTextDocument = vscode.workspace.onDidOpenTextDocument(
     (document) => {
       if (document.languageId === 'lua') {
-        scanDocument(document);
+        scheduleDocumentScan(document);
+      }
+    }
+  );
+
+  const onDidCloseTextDocument = vscode.workspace.onDidCloseTextDocument(
+    (document) => {
+      if (document.languageId === 'lua') {
+        cancelScheduledScan(document);
+        diagnosticCollection.delete(document.uri);
       }
     }
   );
@@ -141,12 +163,13 @@ export function activate(context: vscode.ExtensionContext) {
     refreshDocCommand,
     manageDocSourcesCommand,
     debugDocCommand,
-    clearCacheCommand
+    clearCacheCommand,
+    onDidCloseTextDocument
   );
 
   vscode.workspace.textDocuments.forEach((document) => {
     if (document.languageId === 'lua') {
-      scanDocument(document);
+      scheduleDocumentScan(document);
     }
   });
 }
@@ -155,52 +178,98 @@ function scanDocument(document: vscode.TextDocument) {
   const config = vscode.workspace.getConfiguration('jericofxLuaTools');
   const diagnostics: vscode.Diagnostic[] = [];
 
+  const context = createLuaDiagnosticContext(document);
+
   if (config.get('enableWhileLoopCheck')) {
-    diagnostics.push(...checkWhileLoops(document));
+    diagnostics.push(...checkWhileLoops(context));
   }
 
   if (config.get('enableRepeatLoopCheck')) {
-    diagnostics.push(...checkRepeatLoops(document));
+    diagnostics.push(...checkRepeatLoops(context));
   }
 
   if (config.get('enableGlobalVariableCheck')) {
-    diagnostics.push(...checkGlobalVariables(document));
+    diagnostics.push(...checkGlobalVariables(context));
   }
 
   if (config.get('enablePerformanceCheck')) {
-    diagnostics.push(...checkPerformanceIssues(document));
+    diagnostics.push(...checkPerformanceIssues(context));
   }
 
   if (config.get('enableNetEventCheck')) {
-    diagnostics.push(...checkNetEventPatterns(document));
+    diagnostics.push(...checkNetEventPatterns(context));
   }
 
   if (config.get('enableCitizenPatterns')) {
-    diagnostics.push(...checkCitizenPatterns(document));
+    diagnostics.push(...checkCitizenPatterns(context));
   }
 
   if (config.get('enableLocalFunctionOrderCheck')) {
-    diagnostics.push(...checkLocalFunctionOrder(document));
+    diagnostics.push(...checkLocalFunctionOrder(context));
   }
 
   diagnosticCollection.set(document.uri, diagnostics);
 }
 
-function checkWhileLoops(document: vscode.TextDocument): vscode.Diagnostic[] {
-  const diagnostics: vscode.Diagnostic[] = [];
+function scheduleDocumentScan(document: vscode.TextDocument) {
+  const uri = document.uri.toString();
+  cancelScheduledScan(document);
+  const timer = setTimeout(() => {
+    documentScanTimers.delete(uri);
+    scanDocument(document);
+  }, SCAN_DEBOUNCE_MS);
+  documentScanTimers.set(uri, timer);
+}
+
+function cancelScheduledScan(document: vscode.TextDocument) {
+  const uri = document.uri.toString();
+  const existingTimer = documentScanTimers.get(uri);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    documentScanTimers.delete(uri);
+  }
+}
+
+function createLuaDiagnosticContext(document: vscode.TextDocument): LuaDiagnosticContext {
   const text = document.getText();
-  const lines = text.split('\n');
+  const lines = text.split(/\r?\n/);
+  return { document, text, lines };
+}
+
+function stripComments(line: string): string {
+  return line.replace(/--.*$/, '');
+}
+
+function stripStrings(line: string): string {
+  return line
+    .replace(/"(?:\\.|[^"\\])*"/g, '')
+    .replace(/'(?:\\.|[^'\\])*'/g, '');
+}
+
+function sanitizeCodeLine(line: string): string {
+  return stripComments(stripStrings(line));
+}
+
+function checkWhileLoops(context: LuaDiagnosticContext): vscode.Diagnostic[] {
+  const diagnostics: vscode.Diagnostic[] = [];
+  const { lines } = context;
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
-    const whileMatch = line.match(/\bwhile\s+.+\s+do\b/);
+    if (line.trim().startsWith('--')) {
+      continue;
+    }
+    const sanitizedLine = sanitizeCodeLine(line);
+    const whileMatch = sanitizedLine.match(/\bwhile\s+.+\s+do\b/);
 
     if (whileMatch) {
       const whileBlockEnd = findBlockEnd(lines, lineIndex, 'while', 'end');
       if (whileBlockEnd === -1) continue;
 
-      const blockContent = lines.slice(lineIndex + 1, whileBlockEnd).join('\n');
-      const hasWait = /\b(Wait|Citizen\.Wait)\s*\(/.test(blockContent);
+      const hasWait = lines
+        .slice(lineIndex + 1, whileBlockEnd)
+        .map((innerLine) => sanitizeCodeLine(innerLine))
+        .some((innerLine) => /\b(Wait|Citizen\.Wait)\s*\(/.test(innerLine));
 
       if (!hasWait) {
         const range = new vscode.Range(
@@ -213,7 +282,7 @@ function checkWhileLoops(document: vscode.TextDocument): vscode.Diagnostic[] {
 
         const diagnostic = new vscode.Diagnostic(
           range,
-          'While loop without Wait() detected. Posible Server Freeze detected!',
+          'While loop without Wait() detected. Possible server freeze detected!',
           vscode.DiagnosticSeverity.Warning
         );
         diagnostic.code = 'fivem-while-no-wait';
@@ -225,23 +294,26 @@ function checkWhileLoops(document: vscode.TextDocument): vscode.Diagnostic[] {
   return diagnostics;
 }
 
-function checkRepeatLoops(document: vscode.TextDocument): vscode.Diagnostic[] {
+function checkRepeatLoops(context: LuaDiagnosticContext): vscode.Diagnostic[] {
   const diagnostics: vscode.Diagnostic[] = [];
-  const text = document.getText();
-  const lines = text.split('\n');
+  const { lines } = context;
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
-    const repeatMatch = line.match(/\brepeat\b/);
+    if (line.trim().startsWith('--')) {
+      continue;
+    }
+    const sanitizedLine = sanitizeCodeLine(line);
+    const repeatMatch = sanitizedLine.match(/\brepeat\b/);
 
     if (repeatMatch) {
       const repeatBlockEnd = findBlockEnd(lines, lineIndex, 'repeat', 'until');
       if (repeatBlockEnd === -1) continue;
 
-      const blockContent = lines
+      const hasWait = lines
         .slice(lineIndex + 1, repeatBlockEnd)
-        .join('\n');
-      const hasWait = /\b(Wait|Citizen\.Wait)\s*\(/.test(blockContent);
+        .map((innerLine) => sanitizeCodeLine(innerLine))
+        .some((innerLine) => /\b(Wait|Citizen\.Wait)\s*\(/.test(innerLine));
 
       if (!hasWait) {
         const range = new vscode.Range(
@@ -254,7 +326,7 @@ function checkRepeatLoops(document: vscode.TextDocument): vscode.Diagnostic[] {
 
         const diagnostic = new vscode.Diagnostic(
           range,
-          'Repeat loop without Wait() detected. Posible Server Freeze detected!',
+          'Repeat loop without Wait() detected. Possible server freeze detected!',
           vscode.DiagnosticSeverity.Warning
         );
         diagnostic.code = 'fivem-repeat-no-wait';
@@ -266,12 +338,9 @@ function checkRepeatLoops(document: vscode.TextDocument): vscode.Diagnostic[] {
   return diagnostics;
 }
 
-function checkGlobalVariables(
-  document: vscode.TextDocument
-): vscode.Diagnostic[] {
+function checkGlobalVariables(context: LuaDiagnosticContext): vscode.Diagnostic[] {
   const diagnostics: vscode.Diagnostic[] = [];
-  const text = document.getText();
-  const lines = text.split('\n');
+  const { lines } = context;
 
   const localVariables = new Set<string>();
   const globalPatterns = [
@@ -287,7 +356,6 @@ function checkGlobalVariables(
 
   let tableDepth = 0;
   let functionDepth = 0;
-  let inMultilineString = false;
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
@@ -297,10 +365,7 @@ function checkGlobalVariables(
       continue;
     }
 
-    const cleanLine = trimmedLine
-      .replace(/--.*$/, '')
-      .replace(/"[^"]*"/g, '')
-      .replace(/'[^']*'/g, '');
+    const cleanLine = sanitizeCodeLine(trimmedLine);
 
     const openBraces = (cleanLine.match(/\{/g) || []).length;
     const closeBraces = (cleanLine.match(/\}/g) || []).length;
@@ -342,10 +407,10 @@ function checkGlobalVariables(
       !/^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*/.test(trimmedLine)
     ) {
       const range = new vscode.Range(
-        new vscode.Position(lineIndex, line.indexOf(assignmentMatch[1])),
+        new vscode.Position(lineIndex, lines[lineIndex].indexOf(assignmentMatch[1])),
         new vscode.Position(
           lineIndex,
-          line.indexOf(assignmentMatch[1]) + assignmentMatch[1].length
+          lines[lineIndex].indexOf(assignmentMatch[1]) + assignmentMatch[1].length
         )
       );
 
@@ -363,11 +428,10 @@ function checkGlobalVariables(
 }
 
 function checkPerformanceIssues(
-  document: vscode.TextDocument
+  context: LuaDiagnosticContext
 ): vscode.Diagnostic[] {
   const diagnostics: vscode.Diagnostic[] = [];
-  const text = document.getText();
-  const lines = text.split('\n');
+  const { lines } = context;
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
@@ -392,10 +456,7 @@ function checkPerformanceIssues(
 
     if (line.includes('GetEntityCoords(PlayerPedId())')) {
       const range = new vscode.Range(
-        new vscode.Position(
-          lineIndex,
-          line.indexOf('GetEntityCoords(PlayerPedId())')
-        ),
+        new vscode.Position(lineIndex, line.indexOf('GetEntityCoords(PlayerPedId())')),
         new vscode.Position(
           lineIndex,
           line.indexOf('GetEntityCoords(PlayerPedId())') +
@@ -424,11 +485,11 @@ function findBlockEnd(
 ): number {
   let depth = 1;
   for (let i = startIndex + 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line.includes(startKeyword)) {
+    const sanitizedLine = sanitizeCodeLine(lines[i]).trim();
+    if (sanitizedLine.includes(startKeyword)) {
       depth++;
     }
-    if (line.includes(endKeyword)) {
+    if (sanitizedLine.includes(endKeyword)) {
       depth--;
       if (depth === 0) {
         return i;
@@ -439,11 +500,10 @@ function findBlockEnd(
 }
 
 function checkNetEventPatterns(
-  document: vscode.TextDocument
+  context: LuaDiagnosticContext
 ): vscode.Diagnostic[] {
   const diagnostics: vscode.Diagnostic[] = [];
-  const text = document.getText();
-  const lines = text.split('\n');
+  const { lines } = context;
 
   let hasRegisterNetEvent = false;
   let hasAddEventHandler = false;
@@ -526,11 +586,10 @@ function checkNetEventPatterns(
 }
 
 function checkCitizenPatterns(
-  document: vscode.TextDocument
+  context: LuaDiagnosticContext
 ): vscode.Diagnostic[] {
   const diagnostics: vscode.Diagnostic[] = [];
-  const text = document.getText();
-  const lines = text.split('\n');
+  const { lines } = context;
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
@@ -576,11 +635,10 @@ function checkCitizenPatterns(
 }
 
 function checkLocalFunctionOrder(
-  document: vscode.TextDocument
+  context: LuaDiagnosticContext
 ): vscode.Diagnostic[] {
   const diagnostics: vscode.Diagnostic[] = [];
-  const text = document.getText();
-  const lines = text.split('\n');
+  const { lines } = context;
 
   // Map to store local function declarations: functionName -> lineIndex
   const localFunctionDeclarations = new Map<string, number>();
