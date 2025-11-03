@@ -5,6 +5,8 @@ exports.deactivate = deactivate;
 const vscode = require("vscode");
 const documentation_manager_1 = require("./documentation-manager");
 const documentation_providers_1 = require("./documentation-providers");
+const SCAN_DEBOUNCE_MS = 350;
+const documentScanTimers = new Map();
 let diagnosticCollection;
 let documentationManager;
 function activate(context) {
@@ -25,23 +27,32 @@ function activate(context) {
             scanDocument(activeEditor.document);
         }
     });
-    const scanWorkspaceCommand = vscode.commands.registerCommand('jericofxLuaTools.scanWorkspace', () => {
-        vscode.workspace.findFiles('**/*.lua').then((files) => {
-            files.forEach((file) => {
-                vscode.workspace.openTextDocument(file).then((doc) => {
-                    scanDocument(doc);
-                });
-            });
-        });
+    const scanWorkspaceCommand = vscode.commands.registerCommand('jericofxLuaTools.scanWorkspace', async () => {
+        const files = await vscode.workspace.findFiles('**/*.lua');
+        await Promise.all(files.map(async (file) => {
+            try {
+                const doc = await vscode.workspace.openTextDocument(file);
+                scheduleDocumentScan(doc);
+            }
+            catch (error) {
+                console.error('Failed to open document during workspace scan:', error);
+            }
+        }));
     });
     const onDidChangeTextDocument = vscode.workspace.onDidChangeTextDocument((event) => {
         if (event.document.languageId === 'lua') {
-            scanDocument(event.document);
+            scheduleDocumentScan(event.document);
         }
     });
     const onDidOpenTextDocument = vscode.workspace.onDidOpenTextDocument((document) => {
         if (document.languageId === 'lua') {
-            scanDocument(document);
+            scheduleDocumentScan(document);
+        }
+    });
+    const onDidCloseTextDocument = vscode.workspace.onDidCloseTextDocument((document) => {
+        if (document.languageId === 'lua') {
+            cancelScheduledScan(document);
+            diagnosticCollection.delete(document.uri);
         }
     });
     const addDocSourceCommand = vscode.commands.registerCommand('jericofxLuaTools.addDocumentationSource', () => {
@@ -75,55 +86,94 @@ function activate(context) {
     const clearCacheCommand = vscode.commands.registerCommand('jericofxLuaTools.clearDocumentationCache', () => {
         documentationManager.clearDocumentationCache();
     });
-    context.subscriptions.push(scanCurrentFileCommand, scanWorkspaceCommand, onDidChangeTextDocument, onDidOpenTextDocument, addDocSourceCommand, refreshDocCommand, manageDocSourcesCommand, debugDocCommand, clearCacheCommand);
+    context.subscriptions.push(scanCurrentFileCommand, scanWorkspaceCommand, onDidChangeTextDocument, onDidOpenTextDocument, addDocSourceCommand, refreshDocCommand, manageDocSourcesCommand, debugDocCommand, clearCacheCommand, onDidCloseTextDocument);
     vscode.workspace.textDocuments.forEach((document) => {
         if (document.languageId === 'lua') {
-            scanDocument(document);
+            scheduleDocumentScan(document);
         }
     });
 }
 function scanDocument(document) {
     const config = vscode.workspace.getConfiguration('jericofxLuaTools');
     const diagnostics = [];
+    const context = createLuaDiagnosticContext(document);
     if (config.get('enableWhileLoopCheck')) {
-        diagnostics.push(...checkWhileLoops(document));
+        diagnostics.push(...checkWhileLoops(context));
     }
     if (config.get('enableRepeatLoopCheck')) {
-        diagnostics.push(...checkRepeatLoops(document));
+        diagnostics.push(...checkRepeatLoops(context));
     }
     if (config.get('enableGlobalVariableCheck')) {
-        diagnostics.push(...checkGlobalVariables(document));
+        diagnostics.push(...checkGlobalVariables(context));
     }
     if (config.get('enablePerformanceCheck')) {
-        diagnostics.push(...checkPerformanceIssues(document));
+        diagnostics.push(...checkPerformanceIssues(context));
     }
     if (config.get('enableNetEventCheck')) {
-        diagnostics.push(...checkNetEventPatterns(document));
+        diagnostics.push(...checkNetEventPatterns(context));
     }
     if (config.get('enableCitizenPatterns')) {
-        diagnostics.push(...checkCitizenPatterns(document));
+        diagnostics.push(...checkCitizenPatterns(context));
     }
     if (config.get('enableLocalFunctionOrderCheck')) {
-        diagnostics.push(...checkLocalFunctionOrder(document));
+        diagnostics.push(...checkLocalFunctionOrder(context));
     }
     diagnosticCollection.set(document.uri, diagnostics);
 }
-function checkWhileLoops(document) {
-    const diagnostics = [];
+function scheduleDocumentScan(document) {
+    const uri = document.uri.toString();
+    cancelScheduledScan(document);
+    const timer = setTimeout(() => {
+        documentScanTimers.delete(uri);
+        scanDocument(document);
+    }, SCAN_DEBOUNCE_MS);
+    documentScanTimers.set(uri, timer);
+}
+function cancelScheduledScan(document) {
+    const uri = document.uri.toString();
+    const existingTimer = documentScanTimers.get(uri);
+    if (existingTimer) {
+        clearTimeout(existingTimer);
+        documentScanTimers.delete(uri);
+    }
+}
+function createLuaDiagnosticContext(document) {
     const text = document.getText();
-    const lines = text.split('\n');
+    const lines = text.split(/\r?\n/);
+    return { document, text, lines };
+}
+function stripComments(line) {
+    return line.replace(/--.*$/, '');
+}
+function stripStrings(line) {
+    return line
+        .replace(/"(?:\\.|[^"\\])*"/g, '')
+        .replace(/'(?:\\.|[^'\\])*'/g, '');
+}
+function sanitizeCodeLine(line) {
+    return stripComments(stripStrings(line));
+}
+function checkWhileLoops(context) {
+    const diagnostics = [];
+    const { lines } = context;
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         const line = lines[lineIndex];
-        const whileMatch = line.match(/\bwhile\s+.+\s+do\b/);
+        if (line.trim().startsWith('--')) {
+            continue;
+        }
+        const sanitizedLine = sanitizeCodeLine(line);
+        const whileMatch = sanitizedLine.match(/\bwhile\s+.+\s+do\b/);
         if (whileMatch) {
             const whileBlockEnd = findBlockEnd(lines, lineIndex, 'while', 'end');
             if (whileBlockEnd === -1)
                 continue;
-            const blockContent = lines.slice(lineIndex + 1, whileBlockEnd).join('\n');
-            const hasWait = /\b(Wait|Citizen\.Wait)\s*\(/.test(blockContent);
+            const hasWait = lines
+                .slice(lineIndex + 1, whileBlockEnd)
+                .map((innerLine) => sanitizeCodeLine(innerLine))
+                .some((innerLine) => /\b(Wait|Citizen\.Wait)\s*\(/.test(innerLine));
             if (!hasWait) {
                 const range = new vscode.Range(new vscode.Position(lineIndex, whileMatch.index || 0), new vscode.Position(lineIndex, (whileMatch.index || 0) + whileMatch[0].length));
-                const diagnostic = new vscode.Diagnostic(range, 'While loop without Wait() detected. Posible Server Freeze detected!', vscode.DiagnosticSeverity.Warning);
+                const diagnostic = new vscode.Diagnostic(range, 'While loop without Wait() detected. Possible server freeze detected!', vscode.DiagnosticSeverity.Warning);
                 diagnostic.code = 'fivem-while-no-wait';
                 diagnostics.push(diagnostic);
             }
@@ -131,24 +181,27 @@ function checkWhileLoops(document) {
     }
     return diagnostics;
 }
-function checkRepeatLoops(document) {
+function checkRepeatLoops(context) {
     const diagnostics = [];
-    const text = document.getText();
-    const lines = text.split('\n');
+    const { lines } = context;
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         const line = lines[lineIndex];
-        const repeatMatch = line.match(/\brepeat\b/);
+        if (line.trim().startsWith('--')) {
+            continue;
+        }
+        const sanitizedLine = sanitizeCodeLine(line);
+        const repeatMatch = sanitizedLine.match(/\brepeat\b/);
         if (repeatMatch) {
             const repeatBlockEnd = findBlockEnd(lines, lineIndex, 'repeat', 'until');
             if (repeatBlockEnd === -1)
                 continue;
-            const blockContent = lines
+            const hasWait = lines
                 .slice(lineIndex + 1, repeatBlockEnd)
-                .join('\n');
-            const hasWait = /\b(Wait|Citizen\.Wait)\s*\(/.test(blockContent);
+                .map((innerLine) => sanitizeCodeLine(innerLine))
+                .some((innerLine) => /\b(Wait|Citizen\.Wait)\s*\(/.test(innerLine));
             if (!hasWait) {
                 const range = new vscode.Range(new vscode.Position(lineIndex, repeatMatch.index || 0), new vscode.Position(lineIndex, (repeatMatch.index || 0) + repeatMatch[0].length));
-                const diagnostic = new vscode.Diagnostic(range, 'Repeat loop without Wait() detected. Posible Server Freeze detected!', vscode.DiagnosticSeverity.Warning);
+                const diagnostic = new vscode.Diagnostic(range, 'Repeat loop without Wait() detected. Possible server freeze detected!', vscode.DiagnosticSeverity.Warning);
                 diagnostic.code = 'fivem-repeat-no-wait';
                 diagnostics.push(diagnostic);
             }
@@ -156,10 +209,9 @@ function checkRepeatLoops(document) {
     }
     return diagnostics;
 }
-function checkGlobalVariables(document) {
+function checkGlobalVariables(context) {
     const diagnostics = [];
-    const text = document.getText();
-    const lines = text.split('\n');
+    const { lines } = context;
     const localVariables = new Set();
     const globalPatterns = [
         'Config',
@@ -173,17 +225,13 @@ function checkGlobalVariables(document) {
     ];
     let tableDepth = 0;
     let functionDepth = 0;
-    let inMultilineString = false;
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         const line = lines[lineIndex];
         const trimmedLine = line.trim();
         if (trimmedLine.startsWith('--')) {
             continue;
         }
-        const cleanLine = trimmedLine
-            .replace(/--.*$/, '')
-            .replace(/"[^"]*"/g, '')
-            .replace(/'[^']*'/g, '');
+        const cleanLine = sanitizeCodeLine(trimmedLine);
         const openBraces = (cleanLine.match(/\{/g) || []).length;
         const closeBraces = (cleanLine.match(/\}/g) || []).length;
         tableDepth = Math.max(0, tableDepth + openBraces - closeBraces);
@@ -215,7 +263,7 @@ function checkGlobalVariables(document) {
             !trimmedLine.includes('{') &&
             !trimmedLine.includes('}') &&
             !/^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*/.test(trimmedLine)) {
-            const range = new vscode.Range(new vscode.Position(lineIndex, line.indexOf(assignmentMatch[1])), new vscode.Position(lineIndex, line.indexOf(assignmentMatch[1]) + assignmentMatch[1].length));
+            const range = new vscode.Range(new vscode.Position(lineIndex, lines[lineIndex].indexOf(assignmentMatch[1])), new vscode.Position(lineIndex, lines[lineIndex].indexOf(assignmentMatch[1]) + assignmentMatch[1].length));
             const diagnostic = new vscode.Diagnostic(range, `Potential global variable '${assignmentMatch[1]}' detected. Consider using 'local'.`, vscode.DiagnosticSeverity.Information);
             diagnostic.code = 'fivem-global-variable';
             diagnostics.push(diagnostic);
@@ -223,10 +271,9 @@ function checkGlobalVariables(document) {
     }
     return diagnostics;
 }
-function checkPerformanceIssues(document) {
+function checkPerformanceIssues(context) {
     const diagnostics = [];
-    const text = document.getText();
-    const lines = text.split('\n');
+    const { lines } = context;
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         const line = lines[lineIndex];
         if (line.includes('GetPlayerPed(-1)')) {
@@ -248,11 +295,11 @@ function checkPerformanceIssues(document) {
 function findBlockEnd(lines, startIndex, startKeyword, endKeyword) {
     let depth = 1;
     for (let i = startIndex + 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (line.includes(startKeyword)) {
+        const sanitizedLine = sanitizeCodeLine(lines[i]).trim();
+        if (sanitizedLine.includes(startKeyword)) {
             depth++;
         }
-        if (line.includes(endKeyword)) {
+        if (sanitizedLine.includes(endKeyword)) {
             depth--;
             if (depth === 0) {
                 return i;
@@ -261,10 +308,9 @@ function findBlockEnd(lines, startIndex, startKeyword, endKeyword) {
     }
     return -1;
 }
-function checkNetEventPatterns(document) {
+function checkNetEventPatterns(context) {
     const diagnostics = [];
-    const text = document.getText();
-    const lines = text.split('\n');
+    const { lines } = context;
     let hasRegisterNetEvent = false;
     let hasAddEventHandler = false;
     let currentEventName = '';
@@ -308,10 +354,9 @@ function checkNetEventPatterns(document) {
     }
     return diagnostics;
 }
-function checkCitizenPatterns(document) {
+function checkCitizenPatterns(context) {
     const diagnostics = [];
-    const text = document.getText();
-    const lines = text.split('\n');
+    const { lines } = context;
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         const line = lines[lineIndex];
         if (line.includes('Citizen.CreateThread')) {
@@ -329,10 +374,9 @@ function checkCitizenPatterns(document) {
     }
     return diagnostics;
 }
-function checkLocalFunctionOrder(document) {
+function checkLocalFunctionOrder(context) {
     const diagnostics = [];
-    const text = document.getText();
-    const lines = text.split('\n');
+    const { lines } = context;
     // Map to store local function declarations: functionName -> lineIndex
     const localFunctionDeclarations = new Map();
     // Array to store function calls: [functionName, lineIndex, columnIndex]
