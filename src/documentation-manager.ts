@@ -8,6 +8,9 @@ export class DocumentationManager {
     private cache: Map<string, DocumentationCache> = new Map();
     private context: vscode.ExtensionContext;
     private cacheDir: string;
+    private readonly maxConcurrentDownloads = 2;
+    private activeDownloads = 0;
+    private downloadQueue: Array<() => void> = [];
 
     constructor(context: vscode.ExtensionContext) {
         this.context = context;
@@ -28,7 +31,7 @@ export class DocumentationManager {
         console.log('Refreshing documentation...');
         const config = vscode.workspace.getConfiguration('jericofxLuaTools');
         const sources = config.get<DocumentationSource[]>('documentationSources', []);
-        
+
         console.log('Documentation sources found:', sources.length);
         sources.forEach(source => console.log(`- ${source.name}: ${source.enabled ? 'enabled' : 'disabled'}`));
 
@@ -40,34 +43,60 @@ export class DocumentationManager {
             return;
         }
 
-        const promises = enabledSources.map(source => this.downloadAndParseSource(source));
-        await Promise.all(promises);
-        
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: 'Updating documentation sources',
+            cancellable: false
+        }, async (progress) => {
+            progress.report({ message: 'Starting downloads...' });
+            const promises = enabledSources.map(source => this.runWithSemaphore(() => this.downloadAndParseSource(source, progress)));
+            await Promise.all(promises);
+        });
+
         // Auto-detect and load local types.lua files
         await this.loadLocalTypesFiles();
-        
+
         this.saveCacheToFile();
-        
+
         console.log('Documentation refresh completed. Total cached sources:', this.cache.size);
     }
 
-    private async downloadAndParseSource(source: DocumentationSource): Promise<void> {
+    private async downloadAndParseSource(source: DocumentationSource, progress?: vscode.Progress<{ message?: string }>): Promise<void> {
         try {
             console.log(`Downloading ${source.name} from ${source.url}...`);
+            progress?.report({ message: `Downloading ${source.name}...` });
             vscode.window.showInformationMessage(`Downloading ${source.name} documentation...`);
-            
+
             if (!this.isValidUrl(source.url)) {
                 throw new Error('Invalid URL format');
             }
-            
-            const response = await fetch(source.url, {
+
+            const cachedSource = this.cache.get(source.name);
+            const headers: Record<string, string> = {
+                'User-Agent': 'JericoFX-Lua-Tools'
+            };
+
+            if (cachedSource?.etag) {
+                headers['If-None-Match'] = cachedSource.etag;
+            }
+
+            if (cachedSource?.lastModified) {
+                headers['If-Modified-Since'] = cachedSource.lastModified;
+            }
+
+            const response = await this.fetchWithRetries(source.url, {
                 method: 'GET',
-                headers: {
-                    'User-Agent': 'JericoFX-Lua-Tools'
-                },
+                headers,
                 signal: AbortSignal.timeout(30000)
-            });
-            
+            }, source.name);
+
+            if (response.status === 304) {
+                console.log(`${source.name} not modified; using cached version.`);
+                progress?.report({ message: `${source.name} is up to date.` });
+                vscode.window.showInformationMessage(`${source.name} is up to date (not modified).`);
+                return;
+            }
+
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
@@ -114,7 +143,9 @@ export class DocumentationManager {
             this.cache.set(source.name, {
                 functions,
                 lastUpdate: new Date(),
-                source: source.name
+                source: source.name,
+                etag: response.headers.get('etag') || undefined,
+                lastModified: response.headers.get('last-modified') || undefined
             });
 
             vscode.window.showInformationMessage(`${source.name} documentation updated successfully! Found ${functions.size} functions.`);
@@ -133,6 +164,74 @@ export class DocumentationManager {
         } catch {
             return false;
         }
+    }
+
+    private async runWithSemaphore<T>(task: () => Promise<T>): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            const execute = async () => {
+                this.activeDownloads += 1;
+                try {
+                    const result = await task();
+                    resolve(result);
+                } catch (error) {
+                    reject(error);
+                } finally {
+                    this.activeDownloads -= 1;
+                    this.processQueue();
+                }
+            };
+
+            if (this.activeDownloads < this.maxConcurrentDownloads) {
+                void execute();
+            } else {
+                this.downloadQueue.push(execute);
+            }
+        });
+    }
+
+    private processQueue(): void {
+        if (this.activeDownloads >= this.maxConcurrentDownloads) {
+            return;
+        }
+
+        const next = this.downloadQueue.shift();
+        if (next) {
+            void next();
+        }
+    }
+
+    private async fetchWithRetries(url: string, options: RequestInit, context: string, retries = 3, baseDelay = 500): Promise<Response> {
+        let attempt = 0;
+        let lastError: unknown;
+
+        while (attempt <= retries) {
+            try {
+                const response = await fetch(url, options);
+                if (response.status >= 500 && attempt < retries) {
+                    const delay = baseDelay * Math.pow(2, attempt);
+                    console.warn(`Server error for ${context} (status ${response.status}). Retrying in ${delay}ms...`);
+                    await this.delay(delay);
+                    attempt += 1;
+                    continue;
+                }
+                return response;
+            } catch (error) {
+                lastError = error;
+                if (attempt >= retries) {
+                    break;
+                }
+                const delay = baseDelay * Math.pow(2, attempt);
+                console.warn(`Network error for ${context}. Retrying in ${delay}ms...`, error);
+                await this.delay(delay);
+                attempt += 1;
+            }
+        }
+
+        throw lastError ?? new Error(`Failed to fetch ${context}`);
+    }
+
+    private async delay(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     getFunctionDocumentation(functionName: string): FunctionDoc | undefined {
@@ -165,7 +264,9 @@ export class DocumentationManager {
                     {
                         functions: Object.fromEntries(value.functions),
                         lastUpdate: value.lastUpdate.toISOString(),
-                        source: value.source
+                        source: value.source,
+                        etag: value.etag,
+                        lastModified: value.lastModified
                     }
                 ])
             );
@@ -190,7 +291,9 @@ export class DocumentationManager {
                     this.cache.set(sourceName, {
                         functions: functions as Map<string, FunctionDoc>,
                         lastUpdate: new Date((data as any).lastUpdate),
-                        source: (data as any).source
+                        source: (data as any).source,
+                        etag: (data as any).etag,
+                        lastModified: (data as any).lastModified
                     });
                 }
                 console.log(`Loaded ${this.cache.size} sources from cache`);

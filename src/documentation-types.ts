@@ -34,4 +34,6 @@ export interface DocumentationCache {
     functions: Map<string, FunctionDoc>;
     lastUpdate: Date;
     source: string;
-} 
+    etag?: string;
+    lastModified?: string;
+}
