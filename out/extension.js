@@ -139,37 +139,154 @@ function cancelScheduledScan(document) {
 }
 function createLuaDiagnosticContext(document) {
     const text = document.getText();
+    const sanitizedText = tokenizeLua(text);
     const lines = text.split(/\r?\n/);
-    return { document, text, lines };
+    const sanitizedLines = sanitizedText.split(/\r?\n/);
+    return { document, text, lines, sanitizedText, sanitizedLines };
 }
-function stripComments(line) {
-    return line.replace(/--.*$/, '');
+function isLongBracketStart(text, index) {
+    if (text[index] !== '[') {
+        return { length: 0, level: -1 };
+    }
+    let cursor = index + 1;
+    let level = 0;
+    while (text[cursor] === '=') {
+        level++;
+        cursor++;
+    }
+    if (text[cursor] === '[') {
+        return { length: cursor - index + 1, level };
+    }
+    return { length: 0, level: -1 };
 }
-function stripStrings(line) {
-    return line
-        .replace(/"(?:\\.|[^"\\])*"/g, '')
-        .replace(/'(?:\\.|[^'\\])*'/g, '');
+function isLongBracketEnd(text, index, level) {
+    if (text[index] !== ']') {
+        return { matches: false, length: 0 };
+    }
+    let cursor = index + 1;
+    let matchedEquals = 0;
+    while (text[cursor] === '=' && matchedEquals <= level) {
+        matchedEquals++;
+        cursor++;
+    }
+    if (matchedEquals === level && text[cursor] === ']') {
+        return { matches: true, length: cursor - index + 1 };
+    }
+    return { matches: false, length: 0 };
 }
-function sanitizeCodeLine(line) {
-    return stripComments(stripStrings(line));
+function tokenizeLua(text) {
+    let result = '';
+    let i = 0;
+    let inLineComment = false;
+    let inBlockComment = false;
+    let blockCommentLevel = 0;
+    let inString = false;
+    let stringDelimiter = '';
+    let inLongString = false;
+    let longStringLevel = 0;
+    while (i < text.length) {
+        const char = text[i];
+        if (inLineComment) {
+            if (char === '\n') {
+                inLineComment = false;
+                result += '\n';
+            }
+            else {
+                result += ' ';
+            }
+            i++;
+            continue;
+        }
+        if (inBlockComment) {
+            const { matches, length } = isLongBracketEnd(text, i, blockCommentLevel);
+            if (matches) {
+                result += ' '.repeat(length);
+                i += length;
+                inBlockComment = false;
+                continue;
+            }
+            result += char === '\n' ? '\n' : ' ';
+            i++;
+            continue;
+        }
+        if (inLongString) {
+            const { matches, length } = isLongBracketEnd(text, i, longStringLevel);
+            if (matches) {
+                result += ' '.repeat(length);
+                i += length;
+                inLongString = false;
+                continue;
+            }
+            result += char === '\n' ? '\n' : ' ';
+            i++;
+            continue;
+        }
+        if (inString) {
+            if (char === '\\' && i + 1 < text.length) {
+                result += ' ';
+                result += text[i + 1] === '\n' ? '\n' : ' ';
+                i += 2;
+                continue;
+            }
+            if (char === stringDelimiter) {
+                result += ' ';
+                inString = false;
+                i++;
+                continue;
+            }
+            result += char === '\n' ? '\n' : ' ';
+            i++;
+            continue;
+        }
+        if (char === '-' && text[i + 1] === '-') {
+            const { length, level } = isLongBracketStart(text, i + 2);
+            if (length > 0) {
+                inBlockComment = true;
+                blockCommentLevel = level;
+                result += ' '.repeat(2 + length);
+                i += 2 + length;
+                continue;
+            }
+            inLineComment = true;
+            result += '  ';
+            i += 2;
+            continue;
+        }
+        const longBracketStart = isLongBracketStart(text, i);
+        if (longBracketStart.length > 0) {
+            inLongString = true;
+            longStringLevel = longBracketStart.level;
+            result += ' '.repeat(longBracketStart.length);
+            i += longBracketStart.length;
+            continue;
+        }
+        if (char === '"' || char === "'") {
+            inString = true;
+            stringDelimiter = char;
+            result += ' ';
+            i++;
+            continue;
+        }
+        result += char;
+        i++;
+    }
+    return result;
 }
 function checkWhileLoops(context) {
     const diagnostics = [];
-    const { lines } = context;
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-        const line = lines[lineIndex];
-        if (line.trim().startsWith('--')) {
+    const { lines, sanitizedLines } = context;
+    for (let lineIndex = 0; lineIndex < sanitizedLines.length; lineIndex++) {
+        const sanitizedLine = sanitizedLines[lineIndex];
+        if (!sanitizedLine.trim()) {
             continue;
         }
-        const sanitizedLine = sanitizeCodeLine(line);
         const whileMatch = sanitizedLine.match(/\bwhile\s+.+\s+do\b/);
         if (whileMatch) {
-            const whileBlockEnd = findBlockEnd(lines, lineIndex, 'while', 'end');
+            const whileBlockEnd = findBlockEnd(sanitizedLines, lineIndex, 'while', 'end');
             if (whileBlockEnd === -1)
                 continue;
-            const hasWait = lines
+            const hasWait = sanitizedLines
                 .slice(lineIndex + 1, whileBlockEnd)
-                .map((innerLine) => sanitizeCodeLine(innerLine))
                 .some((innerLine) => /\b(Wait|Citizen\.Wait)\s*\(/.test(innerLine));
             if (!hasWait) {
                 const range = new vscode.Range(new vscode.Position(lineIndex, whileMatch.index || 0), new vscode.Position(lineIndex, (whileMatch.index || 0) + whileMatch[0].length));
@@ -183,21 +300,19 @@ function checkWhileLoops(context) {
 }
 function checkRepeatLoops(context) {
     const diagnostics = [];
-    const { lines } = context;
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-        const line = lines[lineIndex];
-        if (line.trim().startsWith('--')) {
+    const { lines, sanitizedLines } = context;
+    for (let lineIndex = 0; lineIndex < sanitizedLines.length; lineIndex++) {
+        const sanitizedLine = sanitizedLines[lineIndex];
+        if (!sanitizedLine.trim()) {
             continue;
         }
-        const sanitizedLine = sanitizeCodeLine(line);
         const repeatMatch = sanitizedLine.match(/\brepeat\b/);
         if (repeatMatch) {
-            const repeatBlockEnd = findBlockEnd(lines, lineIndex, 'repeat', 'until');
+            const repeatBlockEnd = findBlockEnd(sanitizedLines, lineIndex, 'repeat', 'until');
             if (repeatBlockEnd === -1)
                 continue;
-            const hasWait = lines
+            const hasWait = sanitizedLines
                 .slice(lineIndex + 1, repeatBlockEnd)
-                .map((innerLine) => sanitizeCodeLine(innerLine))
                 .some((innerLine) => /\b(Wait|Citizen\.Wait)\s*\(/.test(innerLine));
             if (!hasWait) {
                 const range = new vscode.Range(new vscode.Position(lineIndex, repeatMatch.index || 0), new vscode.Position(lineIndex, (repeatMatch.index || 0) + repeatMatch[0].length));
@@ -211,7 +326,7 @@ function checkRepeatLoops(context) {
 }
 function checkGlobalVariables(context) {
     const diagnostics = [];
-    const { lines } = context;
+    const { lines, sanitizedLines } = context;
     const localVariables = new Set();
     const globalPatterns = [
         'Config',
@@ -227,21 +342,23 @@ function checkGlobalVariables(context) {
     let functionDepth = 0;
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         const line = lines[lineIndex];
-        const trimmedLine = line.trim();
-        if (trimmedLine.startsWith('--')) {
+        const sanitizedLine = sanitizedLines[lineIndex];
+        const trimmedSanitizedLine = sanitizedLine.trim();
+        if (!trimmedSanitizedLine) {
             continue;
         }
-        const cleanLine = sanitizeCodeLine(trimmedLine);
-        const openBraces = (cleanLine.match(/\{/g) || []).length;
-        const closeBraces = (cleanLine.match(/\}/g) || []).length;
+        const openBraces = (trimmedSanitizedLine.match(/\{/g) || []).length;
+        const closeBraces = (trimmedSanitizedLine.match(/\}/g) || []).length;
         tableDepth = Math.max(0, tableDepth + openBraces - closeBraces);
-        if (cleanLine.includes('function') && !cleanLine.includes('end')) {
+        if (trimmedSanitizedLine.includes('function') &&
+            !trimmedSanitizedLine.includes('end')) {
             functionDepth++;
         }
-        if (cleanLine.includes('end') && !cleanLine.includes('function')) {
+        if (trimmedSanitizedLine.includes('end') &&
+            !trimmedSanitizedLine.includes('function')) {
             functionDepth = Math.max(0, functionDepth - 1);
         }
-        const localMatch = trimmedLine.match(/^local\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*)*)/);
+        const localMatch = trimmedSanitizedLine.match(/^local\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*)*)/);
         if (localMatch) {
             const variables = localMatch[1]
                 .split(',')
@@ -254,15 +371,15 @@ function checkGlobalVariables(context) {
         if (tableDepth > 0 || functionDepth > 0) {
             continue;
         }
-        const assignmentMatch = trimmedLine.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=/);
+        const assignmentMatch = trimmedSanitizedLine.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=/);
         if (assignmentMatch &&
-            !trimmedLine.startsWith('local ') &&
+            !trimmedSanitizedLine.startsWith('local ') &&
             !localVariables.has(assignmentMatch[1]) &&
             !globalPatterns.includes(assignmentMatch[1]) &&
-            !trimmedLine.includes('function') &&
-            !trimmedLine.includes('{') &&
-            !trimmedLine.includes('}') &&
-            !/^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*/.test(trimmedLine)) {
+            !trimmedSanitizedLine.includes('function') &&
+            !trimmedSanitizedLine.includes('{') &&
+            !trimmedSanitizedLine.includes('}') &&
+            !/^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*/.test(trimmedSanitizedLine)) {
             const range = new vscode.Range(new vscode.Position(lineIndex, lines[lineIndex].indexOf(assignmentMatch[1])), new vscode.Position(lineIndex, lines[lineIndex].indexOf(assignmentMatch[1]) + assignmentMatch[1].length));
             const diagnostic = new vscode.Diagnostic(range, `Potential global variable '${assignmentMatch[1]}' detected. Consider using 'local'.`, vscode.DiagnosticSeverity.Information);
             diagnostic.code = 'fivem-global-variable';
@@ -273,16 +390,17 @@ function checkGlobalVariables(context) {
 }
 function checkPerformanceIssues(context) {
     const diagnostics = [];
-    const { lines } = context;
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const { lines, sanitizedLines } = context;
+    for (let lineIndex = 0; lineIndex < sanitizedLines.length; lineIndex++) {
         const line = lines[lineIndex];
-        if (line.includes('GetPlayerPed(-1)')) {
+        const sanitizedLine = sanitizedLines[lineIndex];
+        if (sanitizedLine.includes('GetPlayerPed(-1)')) {
             const range = new vscode.Range(new vscode.Position(lineIndex, line.indexOf('GetPlayerPed(-1)')), new vscode.Position(lineIndex, line.indexOf('GetPlayerPed(-1)') + 'GetPlayerPed(-1)'.length));
             const diagnostic = new vscode.Diagnostic(range, 'Use PlayerPedId() instead of GetPlayerPed(-1) for better performance.', vscode.DiagnosticSeverity.Hint);
             diagnostic.code = 'fivem-performance-ped';
             diagnostics.push(diagnostic);
         }
-        if (line.includes('GetEntityCoords(PlayerPedId())')) {
+        if (sanitizedLine.includes('GetEntityCoords(PlayerPedId())')) {
             const range = new vscode.Range(new vscode.Position(lineIndex, line.indexOf('GetEntityCoords(PlayerPedId())')), new vscode.Position(lineIndex, line.indexOf('GetEntityCoords(PlayerPedId())') +
                 'GetEntityCoords(PlayerPedId())'.length));
             const diagnostic = new vscode.Diagnostic(range, 'Consider caching PlayerPedId() and coordinates if used frequently in loops.', vscode.DiagnosticSeverity.Hint);
@@ -292,10 +410,13 @@ function checkPerformanceIssues(context) {
     }
     return diagnostics;
 }
-function findBlockEnd(lines, startIndex, startKeyword, endKeyword) {
+function findBlockEnd(sanitizedLines, startIndex, startKeyword, endKeyword) {
     let depth = 1;
-    for (let i = startIndex + 1; i < lines.length; i++) {
-        const sanitizedLine = sanitizeCodeLine(lines[i]).trim();
+    for (let i = startIndex + 1; i < sanitizedLines.length; i++) {
+        const sanitizedLine = sanitizedLines[i].trim();
+        if (!sanitizedLine) {
+            continue;
+        }
         if (sanitizedLine.includes(startKeyword)) {
             depth++;
         }
