@@ -5,6 +5,112 @@ import {
   LuaHoverProvider,
 } from './documentation-providers';
 
+class LuaCodeActionProvider implements vscode.CodeActionProvider {
+  provideCodeActions(
+    document: vscode.TextDocument,
+    _range: vscode.Range,
+    context: vscode.CodeActionContext
+  ): vscode.CodeAction[] {
+    const actions: vscode.CodeAction[] = [];
+
+    for (const diagnostic of context.diagnostics) {
+      switch (diagnostic.code) {
+        case 'fivem-while-no-wait':
+        case 'fivem-repeat-no-wait':
+          actions.push(
+            this.createInsertWaitAction(document, diagnostic, 'Wait(0)')
+          );
+          break;
+        case 'fivem-global-variable':
+          actions.push(this.createLocalizeVariableAction(document, diagnostic));
+          break;
+        case 'fivem-citizen-create-thread':
+          actions.push(
+            this.createReplacementAction(document, diagnostic, 'CreateThread')
+          );
+          break;
+        case 'fivem-citizen-wait':
+          actions.push(this.createReplacementAction(document, diagnostic, 'Wait'));
+          break;
+        default:
+          break;
+      }
+    }
+
+    return actions.filter(Boolean) as vscode.CodeAction[];
+  }
+
+  private createInsertWaitAction(
+    document: vscode.TextDocument,
+    diagnostic: vscode.Diagnostic,
+    waitCall: string
+  ): vscode.CodeAction {
+    const action = new vscode.CodeAction(
+      'Insert Wait to prevent freeze',
+      vscode.CodeActionKind.QuickFix
+    );
+    action.diagnostics = [diagnostic];
+
+    const line = diagnostic.range.start.line;
+    const lineText = document.lineAt(line).text;
+    const indent = lineText.match(/^\s*/)?.[0] ?? '';
+    const insertPosition = new vscode.Position(line, lineText.length);
+    const edit = vscode.TextEdit.insert(
+      insertPosition,
+      `\n${indent}  ${waitCall}`
+    );
+
+    action.edit = new vscode.WorkspaceEdit();
+    action.edit.set(document.uri, [edit]);
+    action.isPreferred = true;
+    return action;
+  }
+
+  private createLocalizeVariableAction(
+    document: vscode.TextDocument,
+    diagnostic: vscode.Diagnostic
+  ): vscode.CodeAction {
+    const action = new vscode.CodeAction(
+      "Convert to 'local' variable",
+      vscode.CodeActionKind.QuickFix
+    );
+    action.diagnostics = [diagnostic];
+
+    const line = diagnostic.range.start.line;
+    const lineText = document.lineAt(line).text;
+    const indent = lineText.match(/^\s*/)?.[0] ?? '';
+    const trimmedLine = lineText.trim();
+    const replacement = `${indent}local ${trimmedLine}`;
+
+    action.edit = new vscode.WorkspaceEdit();
+    action.edit.set(document.uri, [vscode.TextEdit.replace(
+      new vscode.Range(new vscode.Position(line, 0), new vscode.Position(line, lineText.length)),
+      replacement
+    )]);
+    action.isPreferred = true;
+    return action;
+  }
+
+  private createReplacementAction(
+    document: vscode.TextDocument,
+    diagnostic: vscode.Diagnostic,
+    replacementText: string
+  ): vscode.CodeAction {
+    const action = new vscode.CodeAction(
+      `Replace with ${replacementText}`,
+      vscode.CodeActionKind.QuickFix
+    );
+    action.diagnostics = [diagnostic];
+
+    action.edit = new vscode.WorkspaceEdit();
+    action.edit.set(document.uri, [
+      vscode.TextEdit.replace(diagnostic.range, replacementText),
+    ]);
+    action.isPreferred = true;
+    return action;
+  }
+}
+
 type LuaDiagnosticContext = {
   readonly document: vscode.TextDocument;
   readonly text: string;
@@ -41,6 +147,13 @@ export function activate(context: vscode.ExtensionContext) {
 
     documentationManager.refreshDocumentation();
   }
+
+  const codeActionProvider = new LuaCodeActionProvider();
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider('lua', codeActionProvider, {
+      providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
+    })
+  );
 
   const scanCurrentFileCommand = vscode.commands.registerCommand(
     'jericofxLuaTools.scanCurrentFile',
